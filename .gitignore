@@ -12,11 +12,11 @@ data/
 .vscode
 
 # Ignore generated files
-*.pdf
-/*.png
-*.svg
-*.jpg
 *.html
+*.png
+*.pdf
+*.jpg
+*.svg
 
 ## Master ignore list from https://github.com/github/gitignore/blob/master/Python.gitignore
 
