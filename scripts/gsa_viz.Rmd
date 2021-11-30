@@ -1,0 +1,59 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+## Loading libraries
+
+```{r}
+library(dplyr)
+library(readr)
+library(sf)
+library(ggplot2)
+library(here)
+library(ggmap)
+library(tmap)
+library(basemaps)
+library(stars)
+```
+
+## Load data
+
+```{r}
+rgi.raw = st_read(here('data/RGI-data/13_rgi60_CentralAsia/13_rgi60_CentralAsia.shp'))
+rgi.pts = st_as_sf(st_drop_geometry(rgi.raw), 
+                   coords = c("CenLon", "CenLat"), crs=4326) %>%
+  select(-RGIId, -GLIMSId, -BgnDate, -EndDate, -O1Region, -O2Region)
+```
+
+## Practice plots
+
+```{r}
+plt.samples = sample_n(rgi.pts, 5000)
+plt.bbox = st_bbox(plt.samples)
+
+base_data = basemap(ext = st_bbox(plt.samples), map_service = "esri", 
+                          map_type = "world_physical_map", class = "geotif")
+# ggplot() + geom_stars(base_data)
+# basemap = get_map(location = as.numeric(plt.bbox), zoom = 6, source = "stamen")
+# ggmap(basemap) + geom_sf(data=plt.samples, aes(color=Zmed)) + 
+#   scale_color_viridis_c(option='viridis')
+
+glaciers_plt = ggplot() + geom_sf(data=plt.samples, aes(color=Zmed), size = 1) + 
+  scale_color_viridis_c(option='viridis')
+
+glaciers_dist = ggplot(plt.samples, aes(Zmed, fill=..x..)) + 
+  geom_histogram(show.legend = FALSE) + scale_fill_viridis_c()
+
+base_data
+glaciers_plt
+glaciers_dist
+```
+
+
+```{r}
+tmap_mode("view")
+tm_basemap("Esri.WorldPhysical", alpha = 0.3) + 
+  tm_shape(plt.samples) + tm_sf(col="Zmed", palette="viridis", style='cont')
+```
+

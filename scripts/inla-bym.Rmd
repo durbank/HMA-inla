@@ -1,0 +1,408 @@
+---
+title: "INLA BYM modeling"
+output: html_notebook
+---
+
+```{r}
+library(here)
+library(tidyverse)
+library(ggpubr)
+library(cetcolor)
+library(sf)
+library(INLA)
+library(INLAutils)
+library(spdep)
+```
+
+```{r}
+# Import climate/glacier data
+dat_sf <- read_sf(here("data/clim_data/glacier_clim.shp"))
+dat_correct = read_sf(here("data/glacier-corrected.geojson")) %>% 
+  st_drop_geometry() %>% 
+  select(RGIId, temp_WARM, T_amp, P_tot, fracP_WARM, Group) %>% 
+  rename(T_w = temp_WARM, P_w = fracP_WARM)
+
+dat_sf = dat_sf %>% 
+  select(RGIId, mb_mwea, area_km2, 
+         z_med, z_aspct, z_slope, hi, 
+         east, north, tau, t2_w_18, t2_w_b, 
+         ppt_a_18, ppt_a_d, ppt_s_18, ppt_s_d) %>% 
+  left_join(dat_correct)
+
+
+
+dat <- dat_sf %>% st_drop_geometry() %>% select(-RGIId)
+```
+
+```{r}
+# Log transforms
+dat_norm <- dat %>%
+  mutate(area_km2 = log(area_km2),
+         z_slope = log(z_slope),
+         tau = log(tau),
+         ppt_s_18 = log(ppt_s_18), 
+         T_w = log(T_w), 
+         T_amp = log(T_amp), 
+         P_tot = log(P_tot)
+  )
+
+# Scaling
+dat_norm <- dat_norm %>%
+  mutate(area_km2 = scale(area_km2),
+         z_med = scale(z_med),
+         z_aspct = scale(z_aspct),
+         z_slope = scale(z_slope),
+         hi = scale(hi),
+         tau = scale(tau),
+         t2_w_18 = scale(t2_w_18),
+         t2_w_b = scale(t2_w_b, center = FALSE),
+         ppt_a_18 = scale(ppt_a_18),
+         ppt_a_d = scale(ppt_a_d, center = FALSE),
+         ppt_s_18 = scale(ppt_s_18),
+         ppt_s_d = scale(ppt_s_d, center = FALSE), 
+         T_w = scale(T_w), 
+         T_amp = scale(T_amp), 
+         P_tot = scale(P_tot), 
+         P_w = scale(P_w, center = FALSE)
+         
+  )
+```
+
+```{r}
+# INLA spatial graph
+dat_norm = dat_norm %>% mutate(idarea = 1:nrow(dat_norm))
+
+# # crds <- st_coordinates(dat_sf)
+# coo <- cbind(dat$east / 1000,
+#              dat$north / 1000)
+# 
+# nb <- graph2nb(gabrielneigh(coo), sym = TRUE)
+# 
+# nb2INLA(here("data/map.adj", nb))
+g <- inla.read.graph(here("data/map.adj"))
+                     
+# Model priors
+prior_bym <- list(prec.unstruct=list(prior='pc.prec',param=c(1, 0.025)),
+                  prec.spatial=list(prior='pc.prec', param=c(1, 0.025)))
+
+prior_bym2 <- list(
+  prec = list(
+    prior = "pc.prec",
+    param = c(0.01 / 0.31, 0.01)),
+  phi = list(
+    prior = "pc",
+    param = c(0.5, 2 / 3))
+)
+```
+
+```{r}
+# # Brewer model without interactions
+# f1 <- mb_mwea ~ 
+#   t2_w_b + t2_w_18 + 
+#   ppt_a_18 + ppt_a_d + 
+#   ppt_s_18 + ppt_s_d +
+#   tau + hi + 
+#   z_med + z_slope + z_aspct + area_km2 +
+#   f(idarea, model = "bym2", graph = g, hyper = prior_bym2)
+
+# # Brewer model without interactions, with corrected temperature
+# f1 <- mb_mwea ~ 
+#   t2_w_b + T_w + 
+#   ppt_a_18 + ppt_a_d + 
+#   ppt_s_18 + ppt_s_d +
+#   tau + hi + 
+#   z_med + z_slope + z_aspct + area_km2 +
+#   f(idarea, model = "bym2", graph = g, hyper = prior_bym2)
+# 
+# system.time(
+#   res1 <- inla(f1, data = dat_norm,
+#                control.predictor = list(compute = TRUE),
+#                control.compute = list(dic = TRUE, waic = TRUE))
+# )
+
+# Model without interactions but with all new changes
+# (This model performs the best without interactions, but more poorly than models with interactions)
+f1 <- mb_mwea ~
+  t2_w_b + T_w +
+  P_tot + ppt_a_d +
+  P_w + ppt_s_d +
+  tau + hi +
+  z_med + z_slope + z_aspct + area_km2 +
+  f(idarea, model = "bym2", graph = g, hyper = prior_bym2)
+
+# system.time(
+#   res1.1 <- inla(f1, data = dat_norm,
+#                control.predictor = list(compute = TRUE),
+#                control.compute = list(dic = TRUE, waic = TRUE))
+# )
+```
+
+```{r}
+# # Model output
+# summary(res1)
+# 
+# # Fixed variable marginal plots
+# plot_fixed_marginals(res1)
+# 
+# # Hyperparameters marginal plots
+# plot_hyper_marginals(res1)
+# 
+# # Residuals plots
+# plot_df <- data.frame(obs = dat$mb_mwea,
+#                       pred = res1$summary.fitted.values$mean)
+# obs.QI = c(quantile(plot_df$obs, 0.005), quantile(plot_df$obs, 0.995))
+# ggplot(plot_df %>% filter(obs>=obs.QI[1] & obs<=obs.QI[2]), aes(x = obs, y = pred)) +
+#   geom_point() + 
+#   geom_abline(slope = 1, intercept = 0, color='red') + 
+#   geom_smooth() + 
+#   ggtitle("No interaction model") +
+#   theme_bw()
+```
+```{r}
+# # Brewer model with interactions and corrected temperature
+# f2 <- mb_mwea ~ 
+#   t2_w_b * T_w + 
+#   t2_w_b * ppt_a_18 + ppt_a_d + 
+#   ppt_s_18 + ppt_s_d +
+#   hi +
+#   tau * z_med + z_slope + z_aspct + area_km2 +
+#   f(idarea, model = "bym2", graph = g, hyper = prior_bym2)
+# 
+# system.time(
+#   res2 <- inla(f2, data = dat_norm,
+#                control.predictor = list(compute = TRUE),
+#                control.compute = list(dic = TRUE, waic = TRUE))
+# )
+
+# Keeler model with interactions
+# (this is much improved compared to w/out interactions, but slightly higher DIC/WAIC compard to Brewer with T correction only)
+f2 <- mb_mwea ~
+  t2_w_b * T_w +
+  t2_w_b * P_tot + ppt_a_d +
+  P_w + ppt_s_d +
+  hi +
+  tau * z_med + z_slope + z_aspct + area_km2 +
+  f(idarea, model = "bym2", graph = g, hyper = prior_bym2)
+
+system.time(
+  res2 <- inla(f2, data = dat_norm,
+               control.predictor = list(compute = TRUE),
+               control.compute = list(dic = TRUE, waic = TRUE))
+)
+```
+
+```{r}
+summary(res2)
+
+plot_fixed_marginals(res2)
+plot_hyper_marginals(res2)
+
+# Residuals plots
+plot_df <- data.frame(obs = dat$mb_mwea,
+                      pred = res2$summary.fitted.values$mean)
+obs.QI = c(quantile(plot_df$obs, 0.005), quantile(plot_df$obs, 0.995))
+ggplot(plot_df %>% filter(obs>=obs.QI[1] & obs<=obs.QI[2]), aes(x = obs, y = pred)) +
+  geom_point() + 
+  geom_abline(slope = 1, intercept = 0, color='red') + 
+  geom_smooth() + 
+  ggtitle("No interaction model") +
+  theme_bw()
+```
+
+
+```{r}
+coefs <- res2$summary.fixed
+
+b0 <- res2$summary.fixed[rownames(res2$summary.fixed) == "(Intercept)", "mean"]
+b1 <- coefs[which(rownames(coefs) == "tau"), "mean"]
+x1 <- seq(-3, 3, length = 100) ## Violent crime
+b2 <- coefs[which(rownames(coefs) == "z_med"), "mean"]
+x2 <- seq(-3, 3) ## PerWhite
+b3 <- coefs[which(rownames(coefs) == "tau:z_med"), "mean"]
+
+mydf <- expand.grid(tau = x1, z_med = x2)
+
+mydf$yhat <- b0 + b1 * mydf$tau + b2 * mydf$z_med +
+  b3 * (mydf$tau * mydf$z_med)
+
+mydf$z_med <- as.factor(mydf$z_med)
+
+p1 <- ggline(mydf, x = "tau", y = "yhat", 
+             col = "z_med", numeric.x.axis = TRUE, 
+             size = 1.5, plot_type = 'l',
+             xlab = "log(tau)",
+             ylab = "mb_mwea", 
+             main = "Interaction tau/z_med")
+print(p1)
+
+p1.obs = ggplot(dat_norm %>% 
+                  filter(mb_mwea<=1.5 & mb_mwea>=-1.5) %>%
+                  filter(z_med<=3.4 & z_med>=-3.4) %>%
+                  filter(tau<=3 & tau>=-3) %>% 
+                  mutate(z_med = as.factor(round(z_med))),
+       aes(x=tau, y=mb_mwea, group=z_med, color=z_med)) + 
+  geom_point(alpha=0.5) + geom_smooth(method = 'lm') + 
+  lims(y = c(-1,1))
+print(p1.obs)
+
+
+
+b0 <- res2$summary.fixed[rownames(res2$summary.fixed) == "(Intercept)", "mean"]
+b1 <- coefs[which(rownames(coefs) == "t2_w_b"), "mean"]
+x1 <- seq(-3, 3, length = 100) ## Violent crime
+b2 <- coefs[which(rownames(coefs) == "T_w"), "mean"]
+x2 <- seq(-3, 3) ## PerWhite
+b3 <- coefs[which(rownames(coefs) == "t2_w_b:T_w"), "mean"]
+
+mydf <- expand.grid(t2_w_b = x1, T_w = x2)
+
+mydf$yhat <- b0 + b1 * mydf$t2_w_b + b2 * mydf$T_w +
+  b3 * (mydf$t2_w_b * mydf$T_w)
+
+mydf$T_w <- as.factor(mydf$T_w)
+
+p2 <- ggline(mydf, x = "t2_w_b", y = "yhat", 
+             col = "T_w", numeric.x.axis = TRUE, 
+             size = 1.5, plot_type = 'l',
+             xlab = "T2 slope",
+             ylab = "mb_mwea", 
+             main = "Interaction t2_w_b/T_w")
+print(p2)
+
+p2.obs = ggplot(dat_norm %>% 
+                  filter(mb_mwea<=1.5 & mb_mwea>=-1.5) %>%
+                  filter(T_w<=3.4 & T_w>=-3.4) %>% 
+                  filter(t2_w_b<=3 & t2_w_b>=-3) %>% 
+                  mutate(T_w = as.factor(round(T_w))), 
+       aes(x=t2_w_b, y=mb_mwea, group=T_w, color=T_w)) + 
+  geom_point(alpha=0.5) + geom_smooth(method = 'lm')
+print(p2.obs)
+
+```
+
+
+```{r}
+# Map of spatial effect for interaction model
+spatial_re <- res2$summary.random$idarea
+dat_sf = dat_sf %>% mutate(re = spatial_re$mean[1:nrow(dat_sf)], 
+                           yhat = res2$summary.fitted.values$mean)
+m1 = ggplot(dat_sf, aes(color=re)) + 
+  geom_sf() + 
+  scale_color_gradientn(colors = cet_pal(5, name = "d2"), limits=c(-1.15,1.15))
+print(m1)
+
+m2 = ggplot(dat_sf, aes(color=yhat)) + 
+  geom_sf() + 
+  scale_color_gradientn(colors = cet_pal(5, name = "d1a"), limits=c(-1.35,1.35))
+print(m2)
+```
+## Plots of uncertainty in mb?
+
+- Table with HDIs for variables
+
+## Cluster zoning
+
+```{r}
+set.seed(777)
+
+alpha.list = sort(unique(dat_norm$Group))
+idx.list = vector(mode = "list", length = length(alpha.list))
+valid.idx = c()
+
+# For each group, hold out 1,000 as a validation set and an additional 5,000 total as test set
+for (i in 1:length(alpha.list)) {
+  idx.i = which(dat_norm$Group == alpha.list[i])
+  idx.list[[i]] = idx.i
+  valid.idx = c(valid.idx, sample(idx.i, 1000))
+}
+test.idx = dat_norm$idarea[!(dat_norm$idarea %in% valid.idx)] %>% 
+  sample(5000)
+
+# Add train, test, and valid factors to tibble
+dat_norm['Split'] = rep("Train", nrow(dat_norm))
+dat_norm[valid.idx,'Split'] = "Valid"
+dat_norm[test.idx,'Split'] = "Test"
+dat_norm = dat_norm %>% mutate(Split = as.factor(Split))
+
+```
+
+
+```{r}
+idx.train = dat_norm$Split == 'Train'
+dat.train = dat_norm
+dat.train[!idx.train,'mb_mwea'] = NA
+
+f3 <- mb_mwea ~
+  t2_w_b * T_w +
+  t2_w_b * P_tot + ppt_a_d +
+  P_w + ppt_s_d +
+  hi +
+  tau * z_med + z_slope + z_aspct + area_km2 +
+  f(idarea, model = "bym2", graph = g, hyper = prior_bym2)
+
+system.time(
+  res3 <- inla(f3, data = dat.train,
+               control.predictor = list(compute = TRUE),
+               control.compute = list(dic = TRUE, waic = TRUE))
+)
+```
+```{r}
+dat.results = dat_norm %>% select(idarea, east, north, Group, Split, mb_mwea)
+dat.results['yhat'] = res3$summary.fitted.values$mean
+dat.results['sd'] = res3$summary.fitted.values$sd
+dat.results['CI.low'] = res3$summary.fitted.values$`0.025quant`
+dat.results['CI.hi'] = res3$summary.fitted.values$`0.975quant`
+
+dat.valid = dat.results %>% filter(Split == 'Valid')
+```
+
+
+```{r}
+
+dat.train = dat_norm %>% filter(Split == 'Train')
+
+mod.list = vector(mode = "list", length = length(alpha.list))
+for (i in 1:length(alpha.list)) {
+  dat.i = dat.train %>% filter(Group == alpha.list[i])
+  system.time(
+    results.i <- inla(f2, data = dat.i, 
+                 control.predictor = list(compute = TRUE), 
+                 control.compute = list(dic = TRUE, waic = TRUE))
+  )
+  mod.list[[i]] = results.i
+}
+
+dat.results = dat_norm %>% select(idarea, east, north, Group, Split, mb_mwea)
+dat.results['yhat'] = NA
+dat.results['sd'] = NA
+dat.results['CI.low'] = NA
+dat.results['CI.hi'] = NA
+# spatial_re <- res2$summary.random$idarea
+# dat_sf = dat_sf %>% mutate(re = spatial_re$mean[1:nrow(dat_sf)], 
+#                            yhat = res2$summary.fitted.values$mean)
+
+for (i in 1:length(mod.list)) {
+  dat.i = dat.results %>% filter(Group==alpha.list[i], Split=='Train')
+  dat.results[dat.i$idarea,'yhat'] = mod.list[[i]]$summary.fitted.values$mean
+  dat.results[dat.i$idarea,'sd'] = mod.list[[i]]$summary.fitted.values$sd
+  dat.results[dat.i$idarea,'CI.low'] = mod.list[[i]]$summary.fitted.values$`0.025quant`
+  dat.results[dat.i$idarea,'CI.hi'] = mod.list[[i]]$summary.fitted.values$`0.975quant`
+}
+```
+
+## Questions for Simon
+
+- What is the period you used for the "warm" period?
+  - I've done some comparisons with my own calculations based on JJA and they can have some significant differences
+- For the random effect results, is this in units of m/yr (same as yhat and mb_mwea)?
+- If I want to do some hold-out validation tests, how do I handle the neighborhood graph to accomplish that?
+- Why such a large difference between `ppt_s_18` and `P_w`? (see figure below)
+
+```{r}
+ggplot(dat_sf, aes(x=ppt_s_18, y=P_w)) + 
+  geom_point() + 
+  geom_abline(intercept = 0, slope = 1, color='red') + 
+  geom_smooth() + 
+  theme_bw()
+```
+

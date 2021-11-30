@@ -1,0 +1,17 @@
+name: hma-inla
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - geoviews
+  - matplotlib
+  - pandas
+  - python=3.9
+  - jupyter
+  - geopandas
+  - pathlib
+  - openpyxl
+  - xarray
+  - scipy
+  - scikit-learn
+prefix: /home/durbank/miniconda3/envs/hma-inla

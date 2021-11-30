@@ -1,0 +1,576 @@
+---
+title: "Model comparison and selection"
+output: html_notebook
+---
+
+## Library and data imports
+
+```{r}
+library(here)
+library(tidyverse)
+library(ggpubr)
+library(cetcolor)
+library(sf)
+library(INLA)
+library(INLAutils)
+library(spdep)
+```
+
+```{r}
+# Import climate/glacier data
+dat_sf <- read_sf(here("data/clim_data/glacier_clim.shp"))
+dat_correct = read_sf(here("data/glacier-corrected.geojson")) %>% 
+  st_drop_geometry() %>% 
+  select(RGIId, temp_WARM, T_amp, P_tot, fracP_WARM, Group) %>% 
+  rename(T_w = temp_WARM, P_w = fracP_WARM)
+
+dat_sf = dat_sf %>% 
+  select(RGIId, mb_mwea, area_km2, 
+         z_med, z_aspct, z_slope, hi, 
+         east, north, tau, t2_w_18, t2_w_b, 
+         ppt_a_18, ppt_a_d, ppt_s_18, ppt_s_d) %>% 
+  left_join(dat_correct)
+
+
+
+dat <- dat_sf %>% st_drop_geometry() %>% select(-RGIId)
+```
+
+## Data transformations
+
+```{r}
+# Log transforms
+dat_norm <- dat %>%
+  mutate(area_km2 = log(area_km2),
+         z_slope = log(z_slope),
+         tau = log(tau),
+         ppt_s_18 = log(ppt_s_18), 
+         T_w = log(T_w), 
+         T_amp = log(T_amp), 
+         P_tot = log(P_tot)
+  )
+
+# Scaling
+dat_norm <- dat_norm %>%
+  mutate(area_km2 = scale(area_km2),
+         z_med = scale(z_med),
+         z_aspct = scale(z_aspct),
+         z_slope = scale(z_slope),
+         hi = scale(hi),
+         tau = scale(tau),
+         t2_w_18 = scale(t2_w_18),
+         t2_w_b = scale(t2_w_b, center = FALSE),
+         ppt_a_18 = scale(ppt_a_18),
+         ppt_a_d = scale(ppt_a_d, center = FALSE),
+         ppt_s_18 = scale(ppt_s_18),
+         ppt_s_d = scale(ppt_s_d, center = FALSE), 
+         T_w = scale(T_w), 
+         T_amp = scale(T_amp), 
+         P_tot = scale(P_tot), 
+         P_w = scale(P_w, center = FALSE)
+         
+  )
+```
+
+```{r}
+set.seed(777)
+
+dat_norm = dat_norm %>% mutate(idarea = 1:nrow(dat_norm))
+
+alpha.list = sort(unique(dat_norm$Group))
+idx.list = vector(mode = "list", length = length(alpha.list))
+valid.idx = c()
+
+# For each group, hold out 1,000 as a validation set and an additional 5,000 total as test set
+for (i in 1:length(alpha.list)) {
+  idx.i = which(dat_norm$Group == alpha.list[i])
+  idx.list[[i]] = idx.i
+  valid.idx = c(valid.idx, sample(idx.i, 1000))
+}
+test.idx = dat_norm$idarea[!(dat_norm$idarea %in% valid.idx)] %>% 
+  sample(5000)
+
+# Add train, test, and valid factors to tibble
+dat_norm['Split'] = rep("Train", nrow(dat_norm))
+dat_norm[valid.idx,'Split'] = "Valid"
+dat_norm[test.idx,'Split'] = "Test"
+dat_norm = dat_norm %>% mutate(Split = as.factor(Split))
+
+```
+
+## Global models
+
+```{r}
+# INLA spatial graph
+# # crds <- st_coordinates(dat_sf)
+# coo <- cbind(dat$east / 1000,
+#              dat$north / 1000)
+# 
+# nb <- graph2nb(gabrielneigh(coo), sym = TRUE)
+# 
+# nb2INLA(here("data/map.adj"), nb)
+g <- inla.read.graph(here("data/map.adj"))
+                     
+# Model priors
+prior_bym <- list(prec.unstruct=list(prior='pc.prec',param=c(1, 0.025)),
+                  prec.spatial=list(prior='pc.prec', param=c(1, 0.025)))
+
+prior_bym2 <- list(
+  prec = list(
+    prior = "pc.prec",
+    param = c(0.01 / 0.31, 0.01)),
+  phi = list(
+    prior = "pc",
+    param = c(0.5, 2 / 3))
+)
+```
+
+```{r}
+idx.train = dat_norm$Split == 'Train'
+dat.train = dat_norm
+dat.train[!idx.train,'mb_mwea'] = NA
+
+# Brewer model without interactions
+f.1 <- mb_mwea ~
+  t2_w_b + t2_w_18 +
+  ppt_a_18 + ppt_a_d +
+  ppt_s_18 + ppt_s_d +
+  tau + hi +
+  z_med + z_slope + z_aspct + area_km2 +
+  f(idarea, model = "bym2", graph = g, hyper = prior_bym2)
+
+# Brewer model without interactions
+f.1 <- mb_mwea ~
+  t2_w_b + t2_w_18 +
+  ppt_a_18 + ppt_a_d +
+  ppt_s_18 + ppt_s_d +
+  tau + hi +
+  z_med + z_slope + z_aspct + area_km2 +
+  f(idarea, model = "bym2", graph = g, hyper = prior_bym2)
+
+# Keeler corrections w/out interactions
+f.2 = mb_mwea ~
+  t2_w_b + T_w +
+  P_tot + ppt_a_d +
+  P_w + ppt_s_d +
+  tau + hi + 
+  z_med + z_slope + z_aspct + area_km2 +
+  f(idarea, model = "bym2", graph = g, hyper = prior_bym2)
+
+# Brewer model with interactions
+f.3 = mb_mwea ~
+  t2_w_b * t2_w_18 +
+  t2_w_b * ppt_a_18 + ppt_a_d +
+  ppt_s_18 + ppt_s_d +
+  hi +
+  tau * z_med + z_slope + z_aspct + area_km2 +
+  f(idarea, model = "bym2", graph = g, hyper = prior_bym2)
+
+# Keeler corrections with interactions
+f.4 <- mb_mwea ~
+  t2_w_b * T_w +
+  t2_w_b * P_tot + ppt_a_d +
+  P_w + ppt_s_d +
+  hi +
+  tau * z_med + z_slope + z_aspct + area_km2 +
+  f(idarea, model = "bym2", graph = g, hyper = prior_bym2)
+
+f.list = c(f.1, f.2, f.3, f.4)
+```
+
+```{r}
+
+# mod.list = vector(mode = "list", length = length(f.list))
+# for (i in 1:length(mod.list)) {
+#   system.time(
+#     results.i <- inla(f.list[[i]], data = dat.train, 
+#                  control.predictor = list(compute = TRUE), 
+#                  control.compute = list(dic = TRUE, waic = TRUE))
+#   )
+#   mod.list[[i]] = results.i
+# }
+# 
+# saveRDS(mod.list, file = here("data/models_latest.rds"))
+```
+
+## Modeling without data transformations
+
+```{r}
+# Scaling
+dat.scale <- dat %>%
+  mutate(area_km2 = scale(area_km2),
+         z_med = scale(z_med),
+         z_aspct = scale(z_aspct),
+         z_slope = scale(z_slope),
+         hi = scale(hi),
+         tau = scale(tau),
+         t2_w_18 = scale(t2_w_18),
+         t2_w_b = scale(t2_w_b, center = FALSE),
+         ppt_a_18 = scale(ppt_a_18),
+         ppt_a_d = scale(ppt_a_d, center = FALSE),
+         ppt_s_18 = scale(ppt_s_18),
+         ppt_s_d = scale(ppt_s_d, center = FALSE), 
+         T_w = scale(T_w), 
+         T_amp = scale(T_amp), 
+         P_tot = scale(P_tot), 
+         P_w = scale(P_w, center = FALSE)
+         
+  )
+
+# Add valid/test factors
+dat.scale = dat.scale %>% mutate(Split = dat_norm$Split, 
+                                 idarea = dat_norm$idarea)
+
+idx.train = dat.scale$Split == 'Train'
+train.scale = dat.scale
+train.scale[!idx.train,'mb_mwea'] = NA
+
+```
+
+```{r}
+# system.time(
+#   results <- inla(f.4, data = train.scale,
+#                control.predictor = list(compute = TRUE),
+#                control.compute = list(dic = TRUE, waic = TRUE))
+# )
+# 
+# 
+# mod.list = append(mod.list, list(results))
+# saveRDS(mod.list, file = here("data/models_latest.rds"))
+```
+
+## Modeling using clustering groups
+
+```{r}
+
+dat.group = dat.scale
+alpha.list = sort(unique(dat.group$Group))
+
+# Create neighbor network for each group
+for (i in alpha.list) {
+  dat.i = dat.group %>% filter(Group == i)
+  
+  # INLA spatial graph
+  # crds <- st_coordinates(dat_sf)
+  coo <- cbind(dat.i$east / 1000,
+               dat.i$north / 1000)
+  
+  fn.i = here("data", 
+              paste("map_", i, ".adj", sep = ''))
+  
+  # Only perform calculation if file does not exist
+  if (!(file.exists(fn.i))) {
+    nb <- graph2nb(gabrielneigh(coo), sym = TRUE)
+    nb2INLA(fn.i, nb)
+  }
+  
+}
+
+```
+
+```{r}
+# # Model priors
+# prior_bym2 <- list(
+#   prec = list(
+#     prior = "pc.prec",
+#     param = c(0.01 / 0.31, 0.01)),
+#   phi = list(
+#     prior = "pc",
+#     param = c(0.5, 2 / 3))
+# )
+# 
+# group.mods = vector(mode = "list", length = length(alpha.list))
+# for (i in 1:length(group.mods)) {
+#   
+#   # Subset data and remove valid/test values
+#   dat.i = dat.group %>% filter(Group == alpha.list[i])
+#   idx.train = dat.i$Split == 'Train'
+#   dat.i[!idx.train,'mb_mwea'] = NA
+#   
+#   # Reset idarea index (necessary to match new neighbor graphs)
+#   dat.i['idarea'] = 1:nrow(dat.i)
+#   
+#   # Load neighbor graph
+#   nb.fn = here("data", paste("map_", alpha.list[i], 
+#                              ".adj", sep = ""))
+#   g = inla.read.graph(nb.fn)
+#   
+#   # # Corrected model without interactions
+#   # f.i = mb_mwea ~
+#   #   t2_w_b + T_w +
+#   #   P_tot + ppt_a_d +
+#   #   P_w + ppt_s_d +
+#   #   tau + hi + 
+#   #   z_med + z_slope + z_aspct + area_km2 +
+#   #   f(idarea, model = "bym2", graph = g, hyper = prior_bym2)
+#   
+#   # Corrected model with interactions
+#   f.i =  mb_mwea ~
+#     t2_w_b * T_w +
+#     t2_w_b * P_tot + ppt_a_d +
+#     P_w + ppt_s_d +
+#     hi +
+#     tau * z_med + z_slope + z_aspct + area_km2 +
+#     f(idarea, model = "bym2", graph = g, hyper = prior_bym2)
+#   
+#   system.time(
+#     results.i <- inla(f.i, data = dat.i,
+#                       control.predictor = list(compute = TRUE),
+#                       control.compute = list(dic = TRUE, waic = TRUE))
+#   )
+#   group.mods[[i]] = results.i
+# }
+# saveRDS(group.mods, here("data", "models_group.rds"))
+
+```
+
+
+## Validation and comparisons of models
+
+```{r}
+get_results = function(df, geo, model, group=FALSE) {
+  
+  
+  if (group) {
+    
+    # if (length(model) < 2) {
+    #   print("Error: Wrong number of models provided for grouping")
+    #   flag = 1
+    # }
+    
+    grp.list = sort(unique(df$Group))
+    for (i in 1:length(grp.list)) {
+      
+      df.i = df %>% filter(Group == grp.list[i])
+      mod.i = model[[i]]
+      pred.i = mod.i$summary.fitted.values$mean
+      pred_sd.i = mod.i$summary.fitted.values$sd
+      re.i = mod.i$summary.random$idarea$mean[1:nrow(df.i)]
+      
+      df[df.i$idarea,'pred'] = pred.i
+      df[df.i$idarea,'pred_sd'] = pred_sd.i
+      df[df.i$idarea,'spat.re'] = re.i
+    }
+    
+  } else {
+    
+    df['pred'] = model$summary.fitted.values$mean
+    df['pred_sd'] = model$summary.fitted.values$sd
+    df['spat.re'] = model$summary.random$idarea$mean[1:nrow(df)]
+  }
+  
+  df = df %>% mutate(error = mb_mwea-pred)
+  df['geometry'] = geo
+  df = df %>% st_as_sf()
+}
+```
+
+```{r}
+# Load modeling results
+mod.list = readRDS(here("data/models_latest.rds"))
+group.mods = readRDS(here("data/models_group.rds"))
+
+# Extract desired results from full model outputs for global models
+results = vector(mode = "list", length = length(mod.list))
+for (i in 1:length(mod.list)) {
+  mod.i = mod.list[[i]]
+  results[[i]] = get_results(df = dat_norm %>% select(idarea, Group, Split, mb_mwea), 
+                             geo = dat_sf['geometry'], 
+                             model = mod.i, 
+                             group = FALSE)
+}
+
+# Extract desired results from full model outputs for group results
+results = append(results, list(get_results(df = dat.group %>% 
+                                             select(idarea, Group, Split, mb_mwea), 
+                                           geo = dat_sf['geometry'], 
+                                           model = group.mods, 
+                                           group = TRUE))
+)
+
+bias_vec = vector(mode = "numeric", length = length(results))
+rmse_vec = vector(mode = "numeric", length = length(results))
+pred.err = vector(mode = "numeric", length = length(results))
+df_plt = tibble()
+mod.names = c("Model.1", "Model.2", "Model.3", 
+              "Model.4", "Model.5", "Model.6")
+for (i in 1:length(results)) {
+  dat.valid = results[[i]] %>% filter(Split == 'Valid')
+  bias_vec[i] = mean(dat.valid$error)
+  rmse_vec[i] = sqrt(mean(dat.valid$error^2))
+  pred.err[i] = mean(dat.valid$pred_sd)
+  
+  row.i = tibble("Name" = mod.names[i], "Residual" = dat.valid$error)
+  df_plt = bind_rows(df_plt, row.i)
+}
+
+p1 = ggplot(df_plt, aes(x=Residual, group = Name, color = Name)) + 
+  geom_density() + xlim(-1,1)
+print(p1)
+
+res_tbl = as_tibble(data.frame("Name" = mod.names, "Bias" = bias_vec, 
+                               "RMSE" = rmse_vec, "Pred.err" = pred.err))
+print(res_tbl)
+```
+
+### Spatial maps of errors and spatial random effects
+
+```{r}
+# gbl.mod = results[[2]]
+# grp.mod = last(results)
+# 
+# err.lims = c(quantile(gbl.mod$error, 0.005), 
+#              quantile(gbl.mod$error, 0.995))
+# ggplot(gbl.mod, aes(x=error, group=Group, color=Group)) + 
+#   geom_density() + xlim(err.lims)
+# ggplot(grp.mod, aes(x=error, group=Group, color=Group)) + 
+#   geom_density() + xlim(err.lims)
+# 
+# 
+# re.lims = c(quantile(gbl.mod$spat.re, 0.005), 
+#             quantile(gbl.mod$spat.re, 0.995))
+# ggplot(gbl.mod, aes(x=spat.re, group=Group, color=Group)) + 
+#   geom_density() + xlim(re.lims)
+# ggplot(grp.mod, aes(x=spat.re, group=Group, color=Group)) + 
+#   geom_density() + xlim(re.lims)
+```
+
+```{r}
+
+# # All the global models are essentially identical, so only compare one with grouped model
+# mod.compare = list(results[[2]], last(results))
+# 
+# for (mod in mod.compare) {
+#   
+#   re.max = max(abs(c(quantile(mod$spat.re, 0.005), 
+#                      quantile(mod$spat.re, 0.995))))
+#   re.lims = c(-re.max, re.max)
+#   m1 = ggplot(mod %>% filter(Split == 'Valid'), 
+#               aes(color=spat.re)) + 
+#     geom_sf() + 
+#     scale_color_gradientn(colors = cet_pal(5, name = "d2"), 
+#                           limits=re.lims)
+#   print(m1)
+#   
+#   
+#   err.max = max(abs(c(quantile(mod$error, 0.005), 
+#                      quantile(mod$error, 0.995))))
+#   err.lims = c(-err.max, err.max)
+#   m2 = ggplot(mod %>% filter(Split == 'Valid'), 
+#               aes(color=error)) + 
+#     geom_sf() + 
+#     scale_color_gradientn(colors = cet_pal(5, name = "d10"), 
+#                           limits=err.lims)
+#   print(m2)
+# }
+```
+
+```{r}
+# All the global models are essentially identical, so only use one
+mod.num = 2
+
+gbl.mod = results[[mod.num]] %>% 
+  mutate(y.fixed = pred-spat.re)
+
+c_max = max(abs(c(quantile(gbl.mod$mb_mwea, 0.005), 
+          quantile(gbl.mod$mb_mwea, 0.995))))
+clims = c(-c_max, c_max)
+ggplot(gbl.mod %>% filter(Split=='Valid'),
+       aes(color=y.fixed)) + geom_sf() + 
+  scale_color_gradientn(colors = rev(cet_pal(5, name = "d1a")), 
+                        limits=clims)
+ggplot(gbl.mod %>% filter(Split == 'Valid'), 
+       aes(color=spat.re)) + 
+  geom_sf() + 
+  scale_color_gradientn(colors = rev(cet_pal(5, name = "d1a")), 
+                        limits=clims)
+ggplot(gbl.mod %>% filter(Split=='Valid'), 
+       aes(color=pred)) + geom_sf() + 
+  scale_color_gradientn(colors = rev(cet_pal(5, name = "d1a")), 
+                        limits=clims)
+mb_plt = ggplot(gbl.mod %>% filter(Split=='Valid'), 
+       aes(color=mb_mwea-pred)) + geom_sf() + 
+  scale_color_gradientn(colors = rev(cet_pal(5, name = "d1a")), 
+                        limits=clims) + 
+  labs(color = "Error")
+print(mb_plt)
+```
+The above figures compare the estimated mass balance without the spatial random effect (top) and with it (bottom) for the global models.
+As can be seen, the random effect dominates over the fixed effects, oftentimes completely shifting the sign of the combined prediction.
+The fixed effects completely miss the Karakoram Anomaly and only predict weakly positive balances for the south-central Tibetean Plateau.
+
+The same figures for the clustered model (shown below) seem to better match reality, as far as the fixed effects go.
+
+```{r}
+
+grp.mod = last(results) %>% 
+  mutate(y.fixed = pred-spat.re)
+
+c_max = max(abs(c(quantile(grp.mod$mb_mwea, 0.005), 
+          quantile(grp.mod$mb_mwea, 0.995))))
+clims = c(-c_max, c_max)
+ggplot(grp.mod %>% filter(Split=='Valid'),
+       aes(color=y.fixed)) + geom_sf() + 
+  scale_color_gradientn(colors = rev(cet_pal(5, name = "d1a")), 
+                        limits=clims)
+ggplot(grp.mod %>% filter(Split == 'Valid'), 
+       aes(color=spat.re)) + 
+  geom_sf() + 
+  scale_color_gradientn(colors = rev(cet_pal(5, name = "d1a")), 
+                        limits=clims)
+ggplot(grp.mod %>% filter(Split=='Valid'), 
+       aes(color=pred)) + geom_sf() + 
+  scale_color_gradientn(colors = rev(cet_pal(5, name = "d1a")), 
+                        limits=clims)
+mb_plt = ggplot(grp.mod %>% filter(Split=='Valid'), 
+       aes(color=mb_mwea-pred)) + geom_sf() + 
+  scale_color_gradientn(colors = rev(cet_pal(5, name = "d1a")), 
+                        limits=clims) + 
+  labs(color = "Error")
+print(mb_plt)
+```
+
+```{r}
+
+err.lims = c(quantile(gbl.mod$error, 0.005), 
+             quantile(gbl.mod$error, 0.995))
+colors <- c("Global" = "red", "Grouped" = "blue")
+ggplot() + 
+  geom_density(data=gbl.mod, aes(x=error, color="Global")) + 
+  geom_density(data=grp.mod, aes(x=error, color="Grouped")) + 
+  xlim(err.lims) + labs(x="Error", color="Model") + 
+    scale_color_manual(values = colors)
+
+
+ggplot(gbl.mod, aes(x=error, group=Group, color=Group)) + 
+  geom_density() + xlim(err.lims) + xlab("Global Error")
+ggplot(grp.mod, aes(x=error, group=Group, color=Group)) + 
+  geom_density() + xlim(err.lims) + xlab("Grouped Error")
+
+
+re.lims = c(quantile(gbl.mod$spat.re, 0.005), 
+            quantile(gbl.mod$spat.re, 0.995))
+ggplot(gbl.mod, aes(x=spat.re, group=Group, color=Group)) + 
+  geom_density() + xlim(re.lims) + xlab("Global random effect")
+ggplot(grp.mod, aes(x=spat.re, group=Group, color=Group)) + 
+  geom_density() + xlim(re.lims) + xlab("Grouped random effect")
+```
+
+
+## Conclusions
+
+These results indicate that in a global sense, all of these models are basically equivalent.
+All show virtually no bias and RMSE that are essentially equal to the uncertainty in model results.
+The modeling uncertainties are comparable between all models.
+Clustered model results are slightly better across the board, but by a minimal amount.
+
+Although error distributions and biases are nearly identical between global and cluster models, the spatial distribution of the random effects differ.
+This is expected, as each cluster group now centers on zero, rather than just the global set.
+In the global analyses, you can see regionally distinct (especially a north-south dipole) in spatial errors, with some clusters wholly biased towards positive/negative but balanced by other clusters biased in the other direction.
+In the clustered results, each cluster is centered on zero, even while the absolute magnitudes of spatial errors are similar.
+There also appears to be spatial coherence in these errors for the clustered groups as well (positively biased on the outskirts, negative bias in the center) that is largely consistent between clusters.
+
+Given these results, I recommend using untransformed Keeler-corrected data and a clustered model without interactions as the final model to use at AGU.
+This should help results to be slightly more intuitive to interpret.
+
+<!-- Given these results, I choose to focus on the untransformed data (as it should be slightly more intuitive to interpret) and the Keeler variable corrections (as these data make a bit more sense in terms of understanding the climate system within the model). -->

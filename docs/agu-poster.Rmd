@@ -1,0 +1,130 @@
+---
+title: "Objective glacio-climate zonation of High Mountain Asia glaciers for improved mass balance prediction"
+output: html_notebook
+---
+
+
+## ABSTRACT
+
+High Mountain Asia (HMA) is often referred to as the "Third Pole," as it contains the most significant volume of ice mass outside polar regions. The future of these glaciers has critical implications for water resources for downstream communities, with millions relying on them for some portion of their water supply. HMA glaciers show diverse and variable responses over recent decades, with some regions experiencing drastic ice losses and others showing relative stability and even mass increases over the same period. These mass changes are the product of both climatic changes and the climate sensitivities of individual glaciers, with many questions remaining as to the type and magnitude of the impact for different climate/glacier features. Glaciers in HMA span an extensive range of climatic zones, elevations, atmospheric influences, moisture provenance, and geomorphic characteristics, further complicating investigations of relationships with glacier mass balance. Regional divisions of these glaciers typically use arbitrary geopolitical boundaries or similarly subjective and ad hoc methods, limiting the usefulness of these zonations. We propose a data-driven methodology based on a hierarchical clustering of climate variables and glacier characteristics to group glaciers into more homogeneous glacio-climatic zones with similar characteristics. We also investigate the improved prediction potential of glacier mass loss when using these more objective glacio-climatic zones. These advances provide more precise predictions of HMA-wide mass changes and an improved understanding of the myriad factors influencing those mass changes.
+
+## MOTIVATION
+
+Mountain glaciers and ice caps globally are melting due to historical changes in climate.
+High Mountain Asia (HMA), as the most heavily glaciated region outside the ice sheets, is therefore particularly vulnerable to current and future warming.
+This region, consisting of the Tibetan Plateau and the Himalaya, Tien Shan, Pamir, and Karakoram mountain ranges, contains nearly 100,000 glaciers, representing *some fraction* of glaciers in the world by ice volume.
+These glaciers represent an essential source of water for residential, agricultural, and industrial purposes for millions of individuals in the region.
+Many of these people lack the resources and infrastructure to adequately quickly adapt to the loss of these resources.
+
+Potentially at risk for collapse/loss/etc.
+Shean et al. (2020) found that HMA lost ~340 Gt of ice in the period 2000-2018 and glacier volume in HMA is predicted to decline up to 90% by the end of the century (Bolch et al., 2019).
+Despite excellent progress to better constrain HMA glacier changes, many questions remain about the current state and future changes of glaciers in HMA.
+Very remote, far from population centers or infrastructure, rugged mountainous terrain, geopolitical concerns and disputed borders.
+All of these issues have resulted in a dearth of glaciological and climatological measurements across the region.
+Summary of some of the work done previously.
+
+
+Glacier mass changes are controlled both by *in-situ* climate and individual climate sensitivities.
+Variables like temperature, precipitation, insolation (and the seasonal distribution in all three), bed topography, glacier aspect, glacier hypsometry, etc.
+How these various characteristics interact and influence the mass balance of individual glaciers is an area of active research (Shean et al., 2020).
+
+Here we characterize the attributes of similar glaciers and how these various attributes relate to the expressed mass balances of individual glaciers across HMA.
+
+
+Importance of HMA glaciers for scientific understanding and water resource management.
+Issues and reasons that understanding/predicting HMA glacier change is complicated and challenging.
+Examples of what some others have done on this front?
+What we are doing and how this can help address these issues.
+- Value of Bayesian approach for these problems (i.e. why uncertainty is important)
+
+## STUDY SITE AND DATA
+
+The data for this study comes from three principal sources:
+
+- 2000--2018 geodetic mass changes for HMA glacier (Shean et al., 2020)
+- High Asia Refined Analysis v2 (HAR v2) daily 10-km climate variables (Wang et al., 2020)
+- Randolph Glacier Inventory (RGI 6.0) glacier features and attributes (RGI Consortium, 2017)
+
+Table 1 lists the variables used (and from which source) in this study.
+
+Figure [] details the general workflow utilized in our study.
+
+Main study figure showing locations of all glaciers across the region (plus important geopolitical boundaries?)
+Additional figures showing spatial variability of key variables across the region.
+HAR climate data, RGI glacier data, Shean et. al. mass balance data
+
+## METHODS
+
+```{mermaid}
+{
+  "theme": "default",
+  "themeVariables": {
+      "fontSize": "36px"
+  }
+  
+}
+
+graph TD
+
+    A[(Daily HAR data <br> ____________ <br> Air temperature <br> Precipitation <br> Model elevation)]:::data
+    B[(RGI <br> ________ <br> Location <br> Elevation <br> Area <br> Slope <br> Aspect)]:::data
+    C[(Geodetic <br> mass balance)]:::data
+
+    A --> D(Elevation-corrected <br> climate data):::process
+    B --> HI(Calculate hypsometric <br> index and response time):::process
+    B --> D
+    D --> E(Mean melt season <br> climate variables):::process
+    D --> F(Linear trend in <br> melt season climate):::process
+    E --> G(Zonation via <br> glacio-climate clustering):::process
+    F --> G
+    B --> G
+    B --> H(Modeling Data):::model
+    C --> H
+    E --> H
+    F --> H
+    G --> H
+    HI --> H
+    H --> I(Training Data):::model
+    H --> J(Validation Data):::model
+    G --> J
+    H --> K(Test Data):::model
+    I --> L(INLA spatial models):::model
+    J --> M(Model comparisons):::model
+    L --> M
+    M --> N(Optimal model):::model
+    K --> O(Model assessment):::model
+    N --> O
+
+    classDef data fill:#f9f
+    classDef process fill:#5ecfe4
+    classDef model fill:#a1c389
+```
+
+Discussion of correction of HAR data (figure of lapse rate corrections?).
+Introduction to INLA (is there a figure I could use to graphically show this?).
+- Reiterate value of Bayesian approach
+- INLA is more scalable due to Markov Random Field assumption (matrix sparsity vastly cuts down on computation)
+Equation for statistical model.
+Attributes of interest (and potential interactions of variables) to test.
+Discussion of clustering of results (based on what, why this is helpful, how it is more objective than what is done before)
+
+## RESULTS
+
+Which model showed best predictive power (DIC and such) and discuss the different model terms included.
+Posterior distributions of model parameters (figure).
+Discussion of which parameters most strongly impact mass balance (with table?).
+Discussion of interesting interactions and what they mean (with figures).
+Figure of spatial error patterns.
+
+## CONCLUSIONS
+
+Blah.
+Blah.
+Blah.
+
+## FUTURE WORK
+
+Blah.
+Blah.
+Blah.
+
