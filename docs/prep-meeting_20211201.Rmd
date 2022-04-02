@@ -1,14 +1,39 @@
 ---
-title: "Model comparison and selection"
-output: html_notebook
+title: "AGU Prep Meeting"
+output: 
+  html_notebook:
+    code_folding: hide
 ---
 
-## Library and data imports
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
 
-```{r}
+## Intro
+
+I've been playing a little with our HMA modeling and exploring the results some, and I just wanted to go over some of this with everyone and get ideas on how to interpret and present these results.
+The main updates I've done are:
+
+- Updating some of the variables (elevation corrections to temperature data, mean climate variables rather than from single years, etc.)
+- Exploring the impact of data transformations on results
+- Modeling different climate "zones" (based on clustering work) independently from each other
+  - Clusters are based on location, elevation, mean annual precipitation, fraction of precipitation during melt season (AMJJAS), mean melt season air temperature, and amplitude of seasonal cycle
+- Using training/validation data sets to assess model performance (bias and RMSE)
+  - Validation set consists of 1,000 glaciers randomly selected from each of the 5 cluster sets and therefore represents ~5% of the full data set
+  - I also have an additional 5,000 glaciers reserved as a final test set
+
+## Key results
+
+The changes to variables and the inclusion/exclusion of data transformations have almost no effect on the final modeled estimates.
+A couple of the fixed variable coefficients differ due to these changes, but most are essentially identical.
+The inclusion of climate zone clusters in modeling has almost no impact on the accuracy/error of the final MB estimates, but it does have a significant effect on the spatial error term in the model.
+It also shows that the individual fixed effects can vary significantly between different clusters.
+
+## Figures and more detailed info
+
+```{r, results=FALSE}
 library(here)
 library(tidyverse)
-library(ggpubr)
 library(cetcolor)
 library(sf)
 library(INLA)
@@ -16,7 +41,7 @@ library(INLAutils)
 library(spdep)
 ```
 
-```{r}
+```{r, results=FALSE}
 # Import climate/glacier data
 dat_sf <- read_sf(here("data/clim_data/glacier_clim.shp"))
 dat_correct = read_sf(here("data/glacier-corrected.geojson")) %>% 
@@ -34,11 +59,7 @@ dat_sf = dat_sf %>%
 
 
 dat <- dat_sf %>% st_drop_geometry() %>% select(-RGIId)
-```
 
-## Data transformations
-
-```{r}
 # Log transforms
 dat_norm <- dat %>%
   mutate(area_km2 = log(area_km2),
@@ -95,21 +116,45 @@ dat_norm['Split'] = rep("Train", nrow(dat_norm))
 dat_norm[valid.idx,'Split'] = "Valid"
 dat_norm[test.idx,'Split'] = "Test"
 dat_norm = dat_norm %>% mutate(Split = as.factor(Split))
+
+# Define training data for tranformed results
+idx.train = dat_norm$Split == 'Train'
+dat.train = dat_norm
+dat.train[!idx.train,'mb_mwea'] = NA
+
+# Scaling of untransformed data
+dat.scale <- dat %>%
+  mutate(area_km2 = scale(area_km2),
+         z_med = scale(z_med),
+         z_aspct = scale(z_aspct),
+         z_slope = scale(z_slope),
+         hi = scale(hi),
+         tau = scale(tau),
+         t2_w_18 = scale(t2_w_18),
+         t2_w_b = scale(t2_w_b, center = FALSE),
+         ppt_a_18 = scale(ppt_a_18),
+         ppt_a_d = scale(ppt_a_d, center = FALSE),
+         ppt_s_18 = scale(ppt_s_18),
+         ppt_s_d = scale(ppt_s_d, center = FALSE), 
+         T_w = scale(T_w), 
+         T_amp = scale(T_amp), 
+         P_tot = scale(P_tot), 
+         P_w = scale(P_w, center = FALSE)
+         
+  )
+
+# Add valid/test factors for untransformed data
+dat.scale = dat.scale %>% mutate(Split = dat_norm$Split, 
+                                 idarea = dat_norm$idarea)
+
+# Defin training data for untransformed results
+idx.train = dat.scale$Split == 'Train'
+train.scale = dat.scale
+train.scale[!idx.train,'mb_mwea'] = NA
 ```
 
-## Global models
-
 ```{r}
-# INLA spatial graph
-# # crds <- st_coordinates(dat_sf)
-# coo <- cbind(dat$east / 1000,
-#              dat$north / 1000)
-# 
-# nb <- graph2nb(gabrielneigh(coo), sym = TRUE)
-# 
-# nb2INLA(here("data/map.adj"), nb)
-g <- inla.read.graph(here("data/map.adj"))
-                     
+
 # Model priors
 prior_bym <- list(prec.unstruct=list(prior='pc.prec',param=c(1, 0.025)),
                   prec.spatial=list(prior='pc.prec', param=c(1, 0.025)))
@@ -122,21 +167,6 @@ prior_bym2 <- list(
     prior = "pc",
     param = c(0.5, 2 / 3))
 )
-```
-
-```{r}
-idx.train = dat_norm$Split == 'Train'
-dat.train = dat_norm
-dat.train[!idx.train,'mb_mwea'] = NA
-
-# Brewer model without interactions
-f.1 <- mb_mwea ~
-  t2_w_b + t2_w_18 +
-  ppt_a_18 + ppt_a_d +
-  ppt_s_18 + ppt_s_d +
-  tau + hi +
-  z_med + z_slope + z_aspct + area_km2 +
-  f(idarea, model = "bym2", graph = g, hyper = prior_bym2)
 
 # Brewer model without interactions
 f.1 <- mb_mwea ~
@@ -178,7 +208,6 @@ f.list = c(f.1, f.2, f.3, f.4)
 ```
 
 ```{r}
-
 # mod.list = vector(mode = "list", length = length(f.list))
 # for (i in 1:length(mod.list)) {
 #   system.time(
@@ -188,45 +217,7 @@ f.list = c(f.1, f.2, f.3, f.4)
 #   )
 #   mod.list[[i]] = results.i
 # }
-# 
-# saveRDS(mod.list, file = here("data/models_latest.rds"))
-```
 
-## Modeling without data transformations
-
-```{r}
-# Scaling
-dat.scale <- dat %>%
-  mutate(area_km2 = scale(area_km2),
-         z_med = scale(z_med),
-         z_aspct = scale(z_aspct),
-         z_slope = scale(z_slope),
-         hi = scale(hi),
-         tau = scale(tau),
-         t2_w_18 = scale(t2_w_18),
-         t2_w_b = scale(t2_w_b, center = FALSE),
-         ppt_a_18 = scale(ppt_a_18),
-         ppt_a_d = scale(ppt_a_d, center = FALSE),
-         ppt_s_18 = scale(ppt_s_18),
-         ppt_s_d = scale(ppt_s_d, center = FALSE), 
-         T_w = scale(T_w), 
-         T_amp = scale(T_amp), 
-         P_tot = scale(P_tot), 
-         P_w = scale(P_w, center = FALSE)
-         
-  )
-
-# Add valid/test factors
-dat.scale = dat.scale %>% mutate(Split = dat_norm$Split, 
-                                 idarea = dat_norm$idarea)
-
-idx.train = dat.scale$Split == 'Train'
-train.scale = dat.scale
-train.scale[!idx.train,'mb_mwea'] = NA
-
-```
-
-```{r}
 # system.time(
 #   results <- inla(f.4, data = train.scale,
 #                control.predictor = list(compute = TRUE),
@@ -235,12 +226,11 @@ train.scale[!idx.train,'mb_mwea'] = NA
 # 
 # 
 # mod.list = append(mod.list, list(results))
-# saveRDS(mod.list, file = here("data/models_latest.rds"))
 ```
 
-## Modeling using clustering groups
-
 ```{r}
+
+# Modeling with climate clusters
 
 dat.group = dat.scale
 alpha.list = sort(unique(dat.group$Group))
@@ -323,8 +313,7 @@ for (i in alpha.list) {
 
 ```
 
-
-## Validation and comparisons of models
+### Validation and comparisons of models
 
 ```{r}
 get_results = function(df, geo, model, group=FALSE) {
@@ -412,57 +401,96 @@ res_tbl = as_tibble(data.frame("Name" = mod.names, "Bias" = bias_vec,
 print(res_tbl)
 ```
 
-### Spatial maps of errors and spatial random effects
+As can be seen in the above figure and table, there is essentially no difference in final MB results between the various models, based on bias and RMSE stats from the validation hold out sets.
+The different models included are as follows:
 
-```{r}
-# gbl.mod = results[[2]]
-# grp.mod = last(results)
-# 
-# err.lims = c(quantile(gbl.mod$error, 0.005), 
-#              quantile(gbl.mod$error, 0.995))
-# ggplot(gbl.mod, aes(x=error, group=Group, color=Group)) + 
-#   geom_density() + xlim(err.lims)
-# ggplot(grp.mod, aes(x=error, group=Group, color=Group)) + 
-#   geom_density() + xlim(err.lims)
-# 
-# 
-# re.lims = c(quantile(gbl.mod$spat.re, 0.005), 
-#             quantile(gbl.mod$spat.re, 0.995))
-# ggplot(gbl.mod, aes(x=spat.re, group=Group, color=Group)) + 
-#   geom_density() + xlim(re.lims)
-# ggplot(grp.mod, aes(x=spat.re, group=Group, color=Group)) + 
-#   geom_density() + xlim(re.lims)
-```
+- Model.1: Original Brewer model without corrections or interactions
+- Model.2: Climate variable corrections without interactions
+- Model.3: Original model with interactions
+- Model.4: Climate variable corrections with interactions
+- Model.5: Climate variable corrections (no interactions) on untransformed data
+- Model.6: Climate variable corrections (with interactions) on untransformed data, broken down into 5 clustered climate zones
 
-```{r}
+### Differences in fixed effects
 
-# # All the global models are essentially identical, so only compare one with grouped model
-# mod.compare = list(results[[2]], last(results))
-# 
-# for (mod in mod.compare) {
-#   
-#   re.max = max(abs(c(quantile(mod$spat.re, 0.005), 
-#                      quantile(mod$spat.re, 0.995))))
-#   re.lims = c(-re.max, re.max)
-#   m1 = ggplot(mod %>% filter(Split == 'Valid'), 
-#               aes(color=spat.re)) + 
-#     geom_sf() + 
-#     scale_color_gradientn(colors = cet_pal(5, name = "d2"), 
-#                           limits=re.lims)
-#   print(m1)
-#   
-#   
-#   err.max = max(abs(c(quantile(mod$error, 0.005), 
-#                      quantile(mod$error, 0.995))))
-#   err.lims = c(-err.max, err.max)
-#   m2 = ggplot(mod %>% filter(Split == 'Valid'), 
-#               aes(color=error)) + 
-#     geom_sf() + 
-#     scale_color_gradientn(colors = cet_pal(5, name = "d10"), 
-#                           limits=err.lims)
-#   print(m2)
+```{r, fig.width=12}
+
+mod.marg = tibble()
+mod.names = c("Model.1", "Model.2", "Model.3", 
+              "Model.4", "Model.5")
+for (i in 1:length(mod.list)) {
+  mod.i = mod.list[[i]]$summary.fixed
+    var.names = row.names(mod.i)
+    for (j in 1:length(var.names)) {
+      lb.j = mod.i$`0.025quant`[j]
+      mu.j = mod.i$mean[j]
+      ub.j = mod.i$`0.975quant`[j]
+      marg.j = tibble(val.lb=lb.j, val.mu=mu.j, val.ub=ub.j, var=var.names[j], Group=mod.names[i])
+      mod.marg = mod.marg %>% bind_rows(marg.j)
+    }
+}
+
+insig.idx = mod.marg['val.lb'] < 0 & mod.marg['val.ub'] > 0
+mod.marg['Significant'] = TRUE
+mod.marg[insig.idx, 'Significant'] = FALSE
+mod.marg = mod.marg %>% mutate(var=as.factor(var), Group=as.factor(Group))
+
+
+ggplot(mod.marg, aes(y = var, x = val.mu, xmin = val.lb, xmax = val.ub, color=Significant)) + 
+  geom_vline(xintercept = 0, colour = "black", lty = 2) +
+  geom_point() + 
+  geom_errorbarh(height = 0) + 
+  scale_color_manual(values = c("TRUE" = "red", "FALSE" = "black")) + 
+  facet_grid(. ~ Group, scales = "free")
+
+# for (i in 1:length(mod.list)) {
+#   print(plot_fixed_marginals(mod.list[[i]]))
 # }
 ```
+These show the marginal posterior distributions for fixed effects for the first 5 models.
+I could be interpreting this wrong, but I think the corrections and changes really only affect the scaling/centering/etc of the results and all of these models are essentially equivalent if they were all transformed into uniform space (although there are some slight changes in significant/insignificant effects between the models).
+
+The next set of plots shows the marginal posterior distributions for fixed effects for each of the climate zones (A-E) using Model.6.
+This is followed by a figure showing the spatial distribution of the clustering.
+As can been seen, the fixed effects parameters can vary significantly between clusters.
+
+```{r, fig.width=12}
+
+group.marg = tibble()
+for (i in 1:length(group.mods)) {
+  mod.i = group.mods[[i]]$summary.fixed
+    var.names = row.names(mod.i)
+    for (j in 1:length(var.names)) {
+      lb.j = mod.i$`0.025quant`[j]
+      mu.j = mod.i$mean[j]
+      ub.j = mod.i$`0.975quant`[j]
+      marg.j = tibble(val.lb=lb.j, val.mu=mu.j, val.ub=ub.j, var=var.names[j], Group=alpha.list[i])
+      group.marg = group.marg %>% bind_rows(marg.j)
+    }
+}
+
+insig.idx = group.marg['val.lb'] < 0 & group.marg['val.ub'] > 0
+group.marg['Significant'] = TRUE
+group.marg[insig.idx, 'Significant'] = FALSE
+group.marg = group.marg %>% mutate(var=as.factor(var), Group=as.factor(Group))
+
+ggplot(group.marg, aes(y = var, x = val.mu, xmin = val.lb, xmax = val.ub, color=Significant)) + 
+  geom_vline(xintercept = 0, colour = "black", lty = 2) +
+  geom_point() + 
+  geom_errorbarh(height = 0) + 
+  scale_color_manual(values = c("TRUE" = "red", "FALSE" = "black")) + 
+  xlim(c(-0.7, 0.3)) + 
+  facet_grid(. ~ Group, scales = "free")
+
+```
+
+```{r}
+ggplot(dat_sf, aes(color=Group)) + geom_sf(alpha=0.5)
+```
+
+### Spatial random effect
+
+When looking at the spatial random effect, Models 1-5 are essentially identical, so I only use one of them (Model.2) and compare it to the spatial random effect of the clustered model results.
 
 ```{r}
 # All the global models are essentially identical, so only use one
@@ -494,11 +522,12 @@ mb_plt = ggplot(gbl.mod %>% filter(Split=='Valid'),
   labs(color = "Error")
 print(mb_plt)
 ```
-The above figures compare the estimated mass balance without the spatial random effect (top) and with it (bottom) for the global models.
-As can be seen, the random effect dominates over the fixed effects, oftentimes completely shifting the sign of the combined prediction.
+The above figures show the estimated mass balance for Models 1-5 (1) without the spatial random effect, (2) just the spatial random effect, (3) the combined fixed+random estimate, and (4) the residuals between observed and modeled (fixed+random) mass balance.
+The glaciers shown are only the 5,000 used as validation (i.e. not directly incorporated in the model training).
+As can be seen, the random effect dominates over the fixed effects, and frequently even shifting the sign of the combined prediction.
 The fixed effects completely miss the Karakoram Anomaly and only predict weakly positive balances for the south-central Tibetean Plateau.
 
-The same figures for the clustered model (shown below) seem to better match reality, as far as the fixed effects go.
+The same figures for the clustered model (shown below) seem to better match reality, as far as the fixed effects go, but the strongest effect still seems to be the spatial random effect.
 
 ```{r}
 
@@ -529,6 +558,8 @@ mb_plt = ggplot(grp.mod %>% filter(Split=='Valid'),
 print(mb_plt)
 ```
 
+The final figures below show (1) the distribution of total error for the global and clustered model, the residual error broken out by cluster for the global and grouped model (2 and 3), and the magnitude of the spatial random effect for the global and group models, again broken out for each cluster (4 and 5).
+
 ```{r}
 
 err.lims = c(quantile(gbl.mod$error, 0.005), 
@@ -554,22 +585,3 @@ ggplot(gbl.mod, aes(x=spat.re, group=Group, color=Group)) +
 ggplot(grp.mod, aes(x=spat.re, group=Group, color=Group)) + 
   geom_density() + xlim(re.lims) + xlab("Grouped random effect")
 ```
-
-
-## Conclusions
-
-These results indicate that in a global sense, all of these models are basically equivalent.
-All show virtually no bias and RMSE that are essentially equal to the uncertainty in model results.
-The modeling uncertainties are comparable between all models.
-Clustered model results are slightly better across the board, but by a minimal amount.
-
-Although error distributions and biases are nearly identical between global and cluster models, the spatial distribution of the random effects differ.
-This is expected, as each cluster group now centers on zero, rather than just the global set.
-In the global analyses, you can see regionally distinct (especially a north-south dipole) in spatial errors, with some clusters wholly biased towards positive/negative but balanced by other clusters biased in the other direction.
-In the clustered results, each cluster is centered on zero, even while the absolute magnitudes of spatial errors are similar.
-There also appears to be spatial coherence in these errors for the clustered groups as well (positively biased on the outskirts, negative bias in the center) that is largely consistent between clusters.
-
-Given these results, I recommend using untransformed Keeler-corrected data and a clustered model without interactions as the final model to use at AGU.
-This should help results to be slightly more intuitive to interpret.
-
-<!-- Given these results, I choose to focus on the untransformed data (as it should be slightly more intuitive to interpret) and the Keeler variable corrections (as these data make a bit more sense in terms of understanding the climate system within the model). -->
