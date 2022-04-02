@@ -3,18 +3,26 @@ title: "AGU 2021 Notebook"
 output: html_notebook
 ---
 
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+
+
 ```{r}
 library(here)
 library(tidyverse)
-library(ggpubr)
+library(latex2exp)
 library(cetcolor)
+library(gridExtra)
 library(sf)
+library(ggpubr)
 library(INLA)
 library(INLAutils)
 library(spdep)
 ```
 
-```{r}
+```{r, results=FALSE}
 # Import climate/glacier data
 dat_sf <- read_sf(here("data/clim_data/glacier_clim.shp"))
 dat_correct = read_sf(here("data/glacier-corrected.geojson")) %>% 
@@ -32,9 +40,7 @@ dat_sf = dat_sf %>%
 
 
 dat <- dat_sf %>% st_drop_geometry() %>% select(-RGIId)
-```
 
-```{r}
 # Log transforms
 dat_norm <- dat %>%
   mutate(area_km2 = log(area_km2),
@@ -92,19 +98,46 @@ dat_norm[valid.idx,'Split'] = "Valid"
 dat_norm[test.idx,'Split'] = "Test"
 dat_norm = dat_norm %>% mutate(Split = as.factor(Split))
 
+# Define training data for tranformed results
+idx.train = dat_norm$Split == 'Train'
+dat.train = dat_norm
+dat.train[!idx.train,'mb_mwea'] = NA
+
+# Scaling of untransformed data
+dat.scale <- dat %>%
+  mutate(area_km2 = scale(area_km2),
+         z_med = scale(z_med),
+         z_aspct = scale(z_aspct),
+         z_slope = scale(z_slope),
+         hi = scale(hi),
+         tau = scale(tau),
+         t2_w_18 = scale(t2_w_18),
+         t2_w_b = scale(t2_w_b, center = FALSE),
+         ppt_a_18 = scale(ppt_a_18),
+         ppt_a_d = scale(ppt_a_d, center = FALSE),
+         ppt_s_18 = scale(ppt_s_18),
+         ppt_s_d = scale(ppt_s_d, center = FALSE), 
+         T_w = scale(T_w), 
+         T_amp = scale(T_amp), 
+         P_tot = scale(P_tot), 
+         P_w = scale(P_w, center = FALSE)
+         
+  )
+
+# Add valid/test factors for untransformed data
+dat.scale = dat.scale %>% mutate(Split = dat_norm$Split, 
+                                 idarea = dat_norm$idarea)
+
+# Defin training data for untransformed results
+idx.train = dat.scale$Split == 'Train'
+train.scale = dat.scale
+train.scale[!idx.train,'mb_mwea'] = NA
 ```
 
+## Global model
+
 ```{r}
-# INLA spatial graph
-# # crds <- st_coordinates(dat_sf)
-# coo <- cbind(dat$east / 1000,
-#              dat$north / 1000)
-# 
-# nb <- graph2nb(gabrielneigh(coo), sym = TRUE)
-# 
-# nb2INLA(here("data/map.adj", nb))
-g <- inla.read.graph(here("data/map.adj"))
-                     
+
 # Model priors
 prior_bym <- list(prec.unstruct=list(prior='pc.prec',param=c(1, 0.025)),
                   prec.spatial=list(prior='pc.prec', param=c(1, 0.025)))
@@ -117,24 +150,439 @@ prior_bym2 <- list(
     prior = "pc",
     param = c(0.5, 2 / 3))
 )
+
+# Create neighbor network for each group
+g.fn = here("data/map.adj")
+if (file.exists(g.fn)) {
+  g = inla.read.graph(here("data/map.adj"))
+} else {
+  coo = cbind(dat$east / 1000,
+             dat$north / 1000)
+  nb = graph2nb(gabrielneigh(coo), sym = TRUE)
+  g = inla.read.graph(here("data/map.adj"))
+}
+
+# Model equation
+f.model = mb_mwea ~
+  t2_w_b + T_w +
+  P_tot + ppt_a_d +
+  P_w + ppt_s_d +
+  tau + hi + 
+  z_med + z_slope + z_aspct + area_km2 +
+  f(idarea, model = "bym2", graph = g, hyper = prior_bym2)
 ```
 
 ```{r}
-idx.train = dat_norm$Split == 'Train'
-dat.train = dat_norm
-dat.train[!idx.train,'mb_mwea'] = NA
-
-f.1 <- mb_mwea ~
-  t2_w_b * T_w +
-  t2_w_b * P_tot + ppt_a_d +
-  P_w + ppt_s_d +
-  hi +
-  tau * z_med + z_slope + z_aspct + area_km2 +
-  f(idarea, model = "bym2", graph = g, hyper = prior_bym2)
-
-system.time(
-  mod.1 <- inla(f.1, data = dat.train,
-               control.predictor = list(compute = TRUE),
-               control.compute = list(dic = TRUE, waic = TRUE))
-)
+mod.fn = here("data", "mod.agu_global.rds")
+if (file.exists(mod.fn)) {
+  mod.global = readRDS(mod.fn)
+} else {
+  system.time(
+    mod.global <- inla(f.model, data = train.scale,
+                     control.predictor = list(compute = TRUE),
+                     control.compute = list(dic = TRUE, waic = TRUE))
+  )
+  saveRDS(mod.global, mod.fn)
+}
 ```
+
+## Group Model
+
+```{r}
+
+dat.group = dat.scale
+alpha.list = sort(unique(dat.group$Group))
+
+# Create neighbor network for each group
+for (i in alpha.list) {
+  dat.i = dat.group %>% filter(Group == i)
+
+  # INLA spatial graph
+  coo <- cbind(dat.i$east / 1000,
+               dat.i$north / 1000)
+
+  fn.i = here("data",
+              paste("map_", i, ".adj", sep = ''))
+
+  # Only perform calculation if file does not exist
+  if (!(file.exists(fn.i))) {
+    nb <- graph2nb(gabrielneigh(coo), sym = TRUE)
+    nb2INLA(fn.i, nb)
+  }
+
+}
+
+```
+
+```{r}
+
+mod.fn = here("data", "mod.agu_group.rds")
+if (file.exists(mod.fn)) {
+  mod.group = readRDS(mod.fn)
+} else {
+  mod.group = vector(mode = "list", length = length(alpha.list))
+  for (i in 1:length(mod.group)) {
+
+    # Subset data and remove valid/test values
+    dat.i = dat.group %>% filter(Group == alpha.list[i])
+    idx.train = dat.i$Split == 'Train'
+    dat.i[!idx.train,'mb_mwea'] = NA
+
+    # Reset idarea index (necessary to match new neighbor graphs)
+    dat.i['idarea'] = 1:nrow(dat.i)
+
+    # Load neighbor graph
+    nb.fn = here("data", paste("map_", alpha.list[i],
+                               ".adj", sep = ""))
+    g.i = inla.read.graph(nb.fn)
+
+    # Model equation
+    f.i = mb_mwea ~
+      t2_w_b + T_w +
+      P_tot + ppt_a_d +
+      P_w + ppt_s_d +
+      tau + hi +
+      z_med + z_slope + z_aspct + area_km2 +
+      f(idarea, model = "bym2", graph = g.i, hyper = prior_bym2)
+
+    system.time(
+      results.i <- inla(f.i, data = dat.i,
+                        control.predictor = list(compute = TRUE),
+                        control.compute = list(dic = TRUE, waic = TRUE))
+    )
+    mod.group[[i]] = results.i
+  }
+  saveRDS(mod.group, mod.fn)
+}
+```
+
+## Results
+
+```{r}
+get_results = function(gdf, model, group=FALSE) {
+  
+  
+  if (group) {
+    
+    grp.list = sort(unique(gdf$Group))
+    for (i in 1:length(grp.list)) {
+      
+      df.i = gdf %>% filter(Group == grp.list[i])
+      mod.i = model[[i]]
+      pred.i = mod.i$summary.fitted.values$mean
+      pred_sd.i = mod.i$summary.fitted.values$sd
+      pred_lb.i = mod.i$summary.fitted.values$`0.025quant`
+      pred_ub.i = mod.i$summary.fitted.values$`0.975quant`
+      re.i = mod.i$summary.random$idarea$mean[1:nrow(df.i)]
+      re_sd.i = mod.i$summary.random$idarea$sd[1:nrow(df.i)]
+      
+      gdf[df.i$idarea,'pred'] = pred.i
+      gdf[df.i$idarea,'pred.sd'] = pred_sd.i
+      gdf[df.i$idarea,'pred.lb'] = pred_lb.i
+      gdf[df.i$idarea,'pred.ub'] = pred_ub.i
+      gdf[df.i$idarea,'spat.re'] = re.i
+      gdf[df.i$idarea,'spat.re_sd'] = re_sd.i
+    }
+    
+  } else {
+    
+    gdf['pred'] = model$summary.fitted.values$mean
+    gdf['pred.sd'] = model$summary.fitted.values$sd
+    gdf['pred.lb'] = model$summary.fitted.values$`0.025quant`
+    gdf['pred.ub'] = model$summary.fitted.values$`0.975quant`
+    gdf['spat.re'] = model$summary.random$idarea$mean[1:nrow(gdf)]
+    gdf['spat.re_sd'] = model$summary.random$idarea$sd[1:nrow(gdf)]
+  }
+  
+  gdf = gdf %>% mutate(error = mb_mwea-pred) %>% 
+    select(idarea, geometry, Group, Split, mb_mwea, pred, 
+           pred.lb, pred.ub, error, pred.sd, spat.re, spat.re_sd)
+  
+  return(gdf)
+}
+```
+
+```{r}
+
+# Create df for results
+dat.results = dat_sf %>% 
+  select(-RGIId, -east, -north, -t2_w_18, -ppt_a_18, -ppt_s_18, -T_amp) %>% 
+  mutate(idarea = dat.scale$idarea, Split = dat.scale$Split)
+
+# Extract desired results from global and group models
+R.global = get_results(gdf = dat.results, model = mod.global, group = FALSE)
+
+# Add prediction results to df
+dat.results = dat.results %>% 
+  mutate(pred = R.global$pred, pred.err = R.global$error, pred.sd = R.global$pred.sd, 
+         pred.lb = R.global$pred.lb, pred.ub = R.global$pred.ub, 
+         spat.re = R.global$spat.re, spat.sd = R.global$spat.re_sd) %>% 
+  relocate(idarea, geometry, Group, Split, mb_mwea, pred, pred.err, 
+           pred.sd, pred.lb, pred.ub, spat.re, spat.sd)
+
+R.fn = here("data/agu.R-results.geojson")
+if (!file.exists(R.fn)) {
+  st_write(dat.results, dsn = R.fn, driver = "GeoJSON")
+}
+```
+
+```{r}
+df.plt = dat.results %>% filter(Split == 'Test')
+
+range.bool = vector(length = nrow(df.plt))
+for (i in 1:length(range.bool)) {
+  row.i = df.plt %>% slice(i)
+  range.bool[i] = between(row.i$mb_mwea, row.i$pred.lb, row.i$pred.ub)
+}
+df.range = sum(range.bool)/length(range.bool)
+df.bias = mean(df.plt$pred.err)
+df.rmse = sqrt(mean(df.plt$pred.err^2))
+df.uncert = sqrt(mean(df.plt$pred.sd^2))
+```
+
+```{r, fig.width=16, fig.height=12}
+p1 = ggdensity(df.plt, x = "pred.err", rug = TRUE, 
+               color = "#00AFBB", fill = "#00AFBB") + 
+  geom_vline(xintercept = 0, color = 'black', lty = 2) + 
+  annotate("text", x=0.65, y=2, label=paste("Mean bias:", 
+                                           format(df.bias, digits=2), 
+                                           "m/yr"), 
+           size = 7) + 
+  annotate("text", x=0.57, y=1.88, label=paste("RMSE:", 
+                                           format(df.rmse, digits=2), 
+                                           "m/yr"), 
+           size = 7) + 
+  annotate("text", x=0.74, y=1.76, label=paste("Prediction uncertainty:", 
+                                           format(df.uncert, digits=2), 
+                                           "m/yr"), 
+           size = 7) + 
+  annotate("text", x=0.7, y=1.64, label=paste("Anomalous predictions: ", 
+                                           format(100*(1-df.range), digits=2), 
+                                           "%", sep = ''), 
+           color='black', size = 7)
+dist.plt = ggpar(p1, xlim = c(-1.25, 1.25), xlab = "Prediction Error (m/yr)")
+
+anom.plt = ggplot() + geom_sf(data=df.plt[range.bool,], color="#00AFBB") + 
+  geom_sf(data=df.plt[!range.bool,], color='red')
+
+dist.plt
+# ggexport(dist.plt, filename = here("ouputs", "err.dist-plt.png"),
+#        width = 900, height = 600, units = 'in')
+```
+
+```{r}
+## Create results df for grouped model
+
+# Create df for results
+grp.results = dat.results %>% 
+  select(idarea, geometry, Group, Split, mb_mwea)
+
+# Extract desired results from global and group models
+R.group = get_results(gdf = grp.results, model = mod.group, group = TRUE)
+
+# Add prediction results to df
+grp.results = grp.results %>% 
+  mutate(pred = R.group$pred, pred.err = R.group$error, pred.sd = R.group$pred.sd, 
+         pred.lb = R.group$pred.lb, pred.ub = R.group$pred.ub, 
+         spat.re = R.group$spat.re, spat.sd = R.group$spat.re_sd) %>% 
+  relocate(idarea, geometry, Group, Split, mb_mwea, pred, pred.err, 
+           pred.sd, pred.lb, pred.ub, spat.re, spat.sd)
+```
+
+
+```{r}
+tmp.1 = dat.results %>% select(1:12) %>% filter(Split == "Test")
+range.global = vector(length = nrow(tmp.1))
+for (i in 1:length(range.global)) {
+  row.i = tmp.1 %>% slice(i)
+  range.global[i] = between(row.i$mb_mwea, row.i$pred.lb, row.i$pred.ub)
+}
+
+tmp.2 = grp.results %>% select(1:12) %>% filter(Split == "Test")
+range.group = vector(length = nrow(tmp.2))
+for (i in 1:length(range.group)) {
+  row.i = tmp.2 %>% slice(i)
+  range.group[i] = between(row.i$mb_mwea, row.i$pred.lb, row.i$pred.ub)
+}
+
+
+df.plt = bind_rows(tmp.1 %>% mutate(Model = "Global", in_range = range.global), 
+                   tmp.2 %>% mutate(Model = "Group", in_range = range.group))
+
+# df.tmp = df.plt %>% 
+#   select(Model, mb_mwea, pred, pred.err, pred.sd, in_range) %>%
+#   st_drop_geometry()
+df.stats = df.plt %>% 
+  st_drop_geometry() %>% group_by(Model) %>% 
+  summarize(in_range = sum(in_range)/length(range.global), 
+            Bias = mean(pred.err), 
+            RMSE = sqrt(mean(pred.err^2)), 
+            St.dev = sqrt(mean(pred.sd^2)))
+```
+
+```{r, fig.width=18, fig.height=12}
+p1 = ggdensity(df.plt, x = "pred.err", rug = TRUE, 
+               color = "Model", fill = "Model", 
+               palette = c("#00AFBB", "#E7B800")) + 
+  geom_vline(xintercept = 0, color = 'black', lty = 2) + 
+  # Global model text
+  annotate("text", x=-0.65, y=2, label=paste("Mean bias:", 
+                                           format(df.stats$Bias[1], digits=2), 
+                                           "m/yr"), 
+           size = 10, color = "#00AFBB") + 
+  annotate("text", x=-0.57, y=1.88, label=paste("RMSE:", 
+                                           format(df.stats$RMSE[1], digits=2), 
+                                           "m/yr"), 
+           size = 10, color = "#00AFBB") + 
+  annotate("text", x=-0.74, y=1.76, label=paste("Prediction uncertainty:", 
+                                           format(df.stats$St.dev[1], digits=2), 
+                                           "m/yr"), 
+           size = 10, color = "#00AFBB") + 
+  annotate("text", x=-0.7, y=1.64, label=paste("Anomalous predictions: ", 
+                                           format(100*(1-df.stats$in_range[1]), digits=2), 
+                                           "%", sep = ''), 
+           size = 10, color = "#00AFBB") + 
+  # Grouped model text
+  annotate("text", x=0.65, y=2, label=paste("Mean bias:", 
+                                           format(df.stats$Bias[2], digits=2), 
+                                           "m/yr"), 
+           size = 10, color = "#E7B800") + 
+  annotate("text", x=0.57, y=1.88, label=paste("RMSE:", 
+                                           format(df.stats$RMSE[2], digits=2), 
+                                           "m/yr"), 
+           size = 10, color = "#E7B800") + 
+  annotate("text", x=0.74, y=1.76, label=paste("Prediction uncertainty:", 
+                                           format(df.stats$St.dev[2], digits=2), 
+                                           "m/yr"), 
+           size = 10, color = "#E7B800") + 
+  annotate("text", x=0.7, y=1.64, label=paste("Anomalous predictions: ", 
+                                           format(100*(1-df.stats$in_range[2]), digits=2), 
+                                           "%", sep = ''), 
+           size = 10, color = "#E7B800")
+dist.plt = ggpar(p1, xlim = c(-1.25, 1.25), xlab = "Prediction Error (m/yr)", 
+                 font.x = c(20, "plain", "black"), font.y = c(20, "plain", "black"), 
+                 font.legend = c(20, "plain", "black"), font.tickslab = c(15, "plain", "black"))
+
+# anom.plt = ggplot(df.plt) + geom_sf(color='black', alpha=0.25)
+#   geom_sf(data=df.plt %>% 
+#             filter(in_range == FALSE, Model == "Global"), color="#00AFBB") + 
+#   geom_sf(data=df.plt %>% 
+#             filter(in_range == FALSE, Model == "Group"), color='#E7B800')
+
+dist.plt
+# ggsave(here("outputs", "err.dist-plt.png"),
+#        plot = dist.plt,
+#        width = 18, height = 12, units = 'in')
+```
+
+
+## Extract fixed effects
+
+```{r, fig.width=16, fig.height=12}
+
+mod.names = c("Global")
+mod.list = list(mod.global)
+# mod.names = c("Global", "Group-A", "Group-B",
+#               "Group-C", "Group-D", "Group-E")
+# mod.list = list(mod.global, mod.group[[1]], mod.group[[2]],
+#                 mod.group[[3]], mod.group[[4]], mod.group[[5]])
+
+mods.fix = tibble()
+for (i in 1:length(mod.list)) {
+  mod.i = mod.list[[i]]$summary.fixed
+    var.names = row.names(mod.i)
+    for (j in 1:length(var.names)) {
+      lb.j = mod.i$`0.025quant`[j]
+      mu.j = mod.i$mean[j]
+      ub.j = mod.i$`0.975quant`[j]
+      fix.j = tibble(val.lb=lb.j, val.mu=mu.j, val.ub=ub.j, var=var.names[j], Group=mod.names[i])
+      mods.fix = mods.fix %>% bind_rows(fix.j)
+    }
+}
+
+insig.idx = mods.fix['val.lb'] < 0 & mods.fix['val.ub'] > 0
+mods.fix['Significant'] = TRUE
+mods.fix[insig.idx, 'Significant'] = FALSE
+mods.fix = mods.fix %>% mutate(var=as.factor(var), Group=as.factor(Group))
+mods.fix$var = recode_factor(mods.fix$var, z_slope = "Slope", z_med = "Elevation", z_aspct = "Aspect", tau = "Response time",
+                             T_w = "Mean melt season temp", t2_w_b = "Change in melt season temp",
+                             P_tot = "Annual precip", ppt_a_d = "Change in melt season precip", ppt_s_d = "Change in % precip in melt season",
+                             P_w = "% precip in melt season", hi = "Hypsometric index", area_km2 = "Glacier area")
+
+
+plt.fixed = ggplot(mods.fix %>% filter(var != "(Intercept)"),
+# plt.fixed = ggplot(mods.fix,
+                   aes(y = var, x = val.mu, xmin = val.lb, xmax = val.ub, color=Significant)) + 
+  geom_vline(xintercept = 0, colour = "black", lty = 2) +
+  geom_point(aes(size = 1)) + geom_errorbarh(height = 0.2, size = 1) + 
+  # xlim(c(-0.05, 0.15)) + 
+  labs(x = NULL, y = NULL) + 
+  scale_color_manual(values = c("TRUE" = "red", "FALSE" = "black")) + 
+    theme(legend.position = "none", 
+          axis.text.y = element_text(colour = c('blue', 'blue', 'blue', 'blue', 
+                                                'purple', 'purple', 'purple', 
+                                                'purple', 'purple', 'purple', 
+                                                'blue', 'blue')), 
+          text = element_text(size = 20)) + 
+  facet_grid(. ~ Group, scales = "free")
+
+plt.fixed
+ggsave(here("outputs", "coeff-plt.png"),
+       plot = plt.fixed,
+       width = 16, height = 12, units = 'in')
+```
+
+## Spatial random effect
+
+```{r, fig.width=20, fig.height=16}
+c_max = max(abs(c(quantile(dat.results$mb_mwea, 0.005), 
+          quantile(dat.results$mb_mwea, 0.995))))
+clims = c(-c_max, c_max)
+
+p1 = ggplot(dat.results %>% filter(Split == "Test")) + 
+  geom_sf(aes(color=pred-spat.re)) + 
+  scale_color_gradientn(colors = rev(cet_pal(5, name = "d1a")),
+                        limits=clims, oob = scales::squish) +
+  labs(color = "MB (m/a)") +
+  ggtitle("A:  Fixed Effects") +
+  theme(text = element_text(size = 20), 
+        legend.key.size = unit(2, "cm"))
+p2 = ggplot(dat.results %>% filter(Split == "Test")) + 
+  geom_sf(aes(color=spat.re)) + 
+  scale_color_gradientn(colors = rev(cet_pal(5, name = "d1a")), 
+                        limits=clims, oob = scales::squish) + 
+  # labs(color = "MB (m/a)") + 
+  ggtitle("B:  Spatial Random Effect") +
+  theme(text = element_text(size = 20), 
+        legend.position = "none") 
+p3 = ggplot(dat.results %>% filter(Split == "Test")) + 
+  geom_sf(aes(color=pred)) + 
+  scale_color_gradientn(colors = rev(cet_pal(5, name = "d1a")), 
+                        limits=clims, oob = scales::squish) + 
+  # labs(color = "MB (m/a)") + 
+  ggtitle("C:  Modeled Prediction") +
+  theme(text = element_text(size = 20), 
+        legend.position = "none") 
+p4 = ggplot(dat.results %>% filter(Split == "Test")) + 
+  geom_sf(aes(color=mb_mwea)) + 
+  scale_color_gradientn(colors = rev(cet_pal(5, name = "d1a")), 
+                        limits=clims, oob = scales::squish) + 
+  # labs(color = "MB") + 
+  ggtitle("D:  Observed Mass Balance") +
+  theme(text = element_text(size = 20), 
+        legend.position = "none")
+
+p.mbs = ggarrange(p1, p2, p3, p4, ncol=2, nrow=2, align = "hv",
+                  common.legend = TRUE, legend="bottom")
+
+p.mbs
+# ggsave(filename = here("outputs", "spat.re-plt.png"),
+#        plot = p.mbs, device = 'png',
+#        width = 20, height = 16, units = 'in')
+```
+
+
+
+
+
+
