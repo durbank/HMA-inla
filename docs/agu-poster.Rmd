@@ -3,6 +3,17 @@ title: "Objective glacio-climate zonation of High Mountain Asia glaciers for imp
 output: html_notebook
 ---
 
+## Motivation
+
+This is why it's important...
+Historically, sparse and unreliable measurements of glaciers and climate.
+Great strides recently both in modeling of the climate in the region (remote sensing of geodetic mass balance, HAR climate reanalysis).
+Still many questions remain as to what influences and dominantly drives the sign, magnitude, and variability of glacier mass changes over recent decades.
+We aim to address this through Bayesian mixed effect modeling that leverages new advances in glacier observations and climate modeling in the region. 
+
+
+
+
 
 ## ABSTRACT
 
@@ -59,7 +70,7 @@ HAR climate data, RGI glacier data, Shean et. al. mass balance data
 {
   "theme": "default",
   "themeVariables": {
-      "fontSize": "36px"
+      "fontSize": "48px"
   }
   
 }
@@ -99,6 +110,14 @@ graph TD
     classDef process fill:#5ecfe4
     classDef model fill:#a1c389
 ```
+
+
+
+| Variable name | Source        | Cool  |
+|---------------|:-------------:|------:|
+| col 3 is      | right-aligned | $1600 |
+| col 2 is      | centered      |   $12 |
+| zebra stripes | are neat      |    $1 |
 
 Discussion of correction of HAR data (figure of lapse rate corrections?).
 Introduction to INLA (is there a figure I could use to graphically show this?).
